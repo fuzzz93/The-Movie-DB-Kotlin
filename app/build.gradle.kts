@@ -38,7 +38,7 @@ android {
             "archivesBaseName",
             "MovieDB_${SimpleDateFormat("yyyyMMdd-HHmm").format(Date())}_v${versionName}(${versionCode})"
         )
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner = "com.kaspersky.kaspresso.runner.KaspressoRunner"
     }
     // check signingKey cmd ./gradlew signingReport
     val signingKeyInfoFile = rootProject.file("signing/release.properties")
@@ -249,6 +249,15 @@ dependencies {
     testImplementation("com.squareup.okhttp3:mockwebserver:5.0.0-alpha.14")
     testImplementation("org.jetbrains.kotlin:kotlin-stdlib:2.0.21")
 //    testImplementation("org.robolectric:robolectric:4.3")
+
+    androidTestImplementation("com.kaspersky.android-components:kaspresso:1.6.1")
+    androidTestImplementation("com.kaspersky.android-components:kaspresso-allure-support:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:core-ktx:1.6.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:rules:1.6.1")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    androidTestImplementation("androidx.test.espresso:espresso-contrib:3.6.1")
 
     // compose
     // https://developer.android.com/jetpack/compose/interop/adding
