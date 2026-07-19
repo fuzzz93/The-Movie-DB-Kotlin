@@ -14,6 +14,9 @@ class MockInterceptor(
 ) : Interceptor {
     companion object {
         private const val MOCK_DISCOVER_MOVIE = "mock_discover_movie.json"
+
+        @Volatile
+        var forceHttpError: Boolean = false
     }
 
     /**
@@ -24,24 +27,27 @@ class MockInterceptor(
     override fun intercept(chain: Interceptor.Chain): Response {
         if (BuildConfig.DEBUG) {
             val uri = chain.request().url.toUri().toString()
-            val responseString = when {
-                uri.contains("default") -> ""
 
-                // mock http code
-                /*uri.contains(ApiPath.DISCOVER_MOVIE) -> return chain.proceed(chain.request())
+            if (forceHttpError && uri.contains(ApiPath.DISCOVER_MOVIE)) {
+                return chain.proceed(chain.request())
                     .newBuilder()
-                    .code(404)
+                    .code(HttpURLConnection.HTTP_NOT_FOUND)
                     .protocol(Protocol.HTTP_2)
-                    .message("responseString")
+                    .message("Not Found")
                     .body(
-                        "responseString".toByteArray()
+                        "{}".toByteArray()
                             .toResponseBody("application/json".toMediaTypeOrNull())
                     )
                     .addHeader("content-type", "application/json")
-                    .build()*/
+                    .build()
+            }
+
+            val responseString = when {
+                uri.contains("default") -> ""
 
                 // mock api response
-//                uri.contains(ApiPath.DISCOVER_MOVIE) -> assets.getJsonStringFromFile(MOCK_DISCOVER_MOVIE)
+                uri.contains(ApiPath.DISCOVER_MOVIE) ->
+                    assets.open(MOCK_DISCOVER_MOVIE).bufferedReader().use { it.readText() }
                 else -> null
             }
 
