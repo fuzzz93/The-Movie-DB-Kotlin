@@ -17,6 +17,7 @@ plugins {
     id("dagger.hilt.android.plugin")
     jacoco
     id("kotlin-kapt") // for data binding
+    id("de.mannodermaus.android-junit5")
 }
 
 android {
@@ -136,6 +137,19 @@ android {
 //        checkReleaseBuilds = false
 //        abortOnError = false
     }
+    testOptions {
+        unitTests {
+            isReturnDefaultValues = true
+            isIncludeAndroidResources = true
+        }
+    }
+}
+
+tasks.withType<Test>().configureEach {
+    systemProperty(
+        "allure.results.directory",
+        layout.buildDirectory.dir("allure-results").get().asFile.absolutePath,
+    )
 }
 
 dependencies {
@@ -249,6 +263,14 @@ dependencies {
     testImplementation("com.squareup.okhttp3:mockwebserver:5.0.0-alpha.14")
     testImplementation("org.jetbrains.kotlin:kotlin-stdlib:2.0.21")
 //    testImplementation("org.robolectric:robolectric:4.3")
+
+    // JUnit5 (Jupiter) + Allure
+    testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
+    testImplementation("org.junit.jupiter:junit-jupiter-params:5.11.4")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    // vintage engine keeps existing JUnit4 tests running on the JUnit Platform
+    testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.11.4")
+    testImplementation("io.qameta.allure:allure-junit5:2.29.1")
 
     // compose
     // https://developer.android.com/jetpack/compose/interop/adding
@@ -431,7 +453,7 @@ kapt {
 }
 
 jacoco {
-    toolVersion = "0.8.8"
+    toolVersion = "0.8.12"
 }
 
 /** There are two ways to see test result:
@@ -513,10 +535,10 @@ project.afterEvaluate {
                 )
                 //Explain to Jacoco where are you .class file java and kotlin
                 classDirectories.setFrom(
-                    fileTree("${project.layout.buildDirectory}/intermediates/classes/${sourcePath}").exclude(
+                    fileTree("${project.layout.buildDirectory.get().asFile}/intermediates/classes/${sourcePath}").exclude(
                         excludeFiles
                     ),
-                    fileTree("${project.layout.buildDirectory}/tmp/kotlin-classes/${sourceName}").exclude(
+                    fileTree("${project.layout.buildDirectory.get().asFile}/tmp/kotlin-classes/${sourceName}").exclude(
                         excludeFiles
                     )
                 )
@@ -529,7 +551,7 @@ project.afterEvaluate {
                 //Explain to Jacoco where is your source code
                 sourceDirectories.setFrom(files(coverageSourceDirs))
                 //execute file .exec to generate data report
-                executionData.setFrom(files("${project.layout.buildDirectory}/jacoco/${testTaskName}.exec"))
+                executionData.setFrom(files("${project.layout.buildDirectory.get().asFile}/jacoco/${testTaskName}.exec"))
                 reports {
                     xml.required.set(true)
                     html.required.set(true)
@@ -537,5 +559,159 @@ project.afterEvaluate {
                 dependsOn(testTaskName)
             }
         }
+    }
+}
+
+/**
+ * Рендерит один самодостаточный HTML-отчёт о покрытии из JaCoCo XML.
+ * Штатный HTML JaCoCo многофайловый; эта таска собирает единую страницу
+ * со сводкой и таблицами по пакетам/классам.
+ *
+ * Запуск: ./gradlew :app:testDevDebugUnitTestCoverage :app:coverageSingleHtml
+ * Результат: reports/coverage.html (в корне репозитория).
+ */
+tasks.register("coverageSingleHtml") {
+    group = "coverage"
+    description = "Собирает единый HTML-отчёт о покрытии из JaCoCo XML (reports/coverage.html)"
+    dependsOn("testDevDebugUnitTestCoverage")
+
+    val xmlFile = layout.buildDirectory
+        .file("reports/jacoco/testDevDebugUnitTestCoverage/testDevDebugUnitTestCoverage.xml")
+    val outFile = rootProject.layout.projectDirectory.file("reports/coverage.html")
+
+    inputs.file(xmlFile)
+    outputs.file(outFile)
+
+    doLast {
+        val xml = xmlFile.get().asFile
+        require(xml.exists()) { "JaCoCo XML не найден: $xml — сначала запусти testDevDebugUnitTestCoverage" }
+
+        // DOM без загрузки внешней DTD (report.dtd), иначе парсинг падает офлайн.
+        val factory = javax.xml.parsers.DocumentBuilderFactory.newInstance().apply {
+            setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
+            isValidating = false
+        }
+        val doc = factory.newDocumentBuilder().parse(xml)
+        val report = doc.documentElement
+
+        fun children(el: org.w3c.dom.Element, tag: String): List<org.w3c.dom.Element> {
+            val out = ArrayList<org.w3c.dom.Element>()
+            val nodes = el.childNodes
+            for (i in 0 until nodes.length) {
+                val n = nodes.item(i)
+                if (n is org.w3c.dom.Element && n.tagName == tag) out.add(n)
+            }
+            return out
+        }
+
+        // type -> (covered, total)
+        fun counters(el: org.w3c.dom.Element): Map<String, Pair<Int, Int>> =
+            children(el, "counter").associate {
+                val cov = it.getAttribute("covered").toInt()
+                val mis = it.getAttribute("missed").toInt()
+                it.getAttribute("type") to (cov to (cov + mis))
+            }
+
+        fun pct(p: Pair<Int, Int>): Int {
+            val (cov, tot) = p
+            // Math.rint — округление к ближайшему чётному (как round() в Python).
+            return if (tot != 0) Math.rint(100.0 * cov / tot).toInt() else 100
+        }
+
+        fun esc(s: String): String = s
+            .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        fun bar(p: Int): String {
+            val color = if (p >= 80) "#3fb950" else if (p >= 50) "#d29922" else "#f85149"
+            return """<div class="bar"><div class="fill" style="width:$p%;background:$color"></div>""" +
+                """<span class="lbl">$p%</span></div>"""
+        }
+
+        fun cell(c: Map<String, Pair<Int, Int>>, key: String): String =
+            c[key]?.let { bar(pct(it)) } ?: """<span class="na">—</span>"""
+
+        val overall = counters(report)
+
+        data class Pkg(val name: String, val c: Map<String, Pair<Int, Int>>)
+        data class Cls(val pkg: String, val name: String, val c: Map<String, Pair<Int, Int>>)
+
+        val rowsPkg = ArrayList<Pkg>()
+        val rowsCls = ArrayList<Cls>()
+        for (pkg in children(report, "package")) {
+            val pname = pkg.getAttribute("name").replace('/', '.')
+            rowsPkg.add(Pkg(pname, counters(pkg)))
+            for (cls in children(pkg, "class")) {
+                val cname = cls.getAttribute("name").substringAfterLast('/')
+                if ('$' in cname) continue // синтетические вложенные лямбды
+                rowsCls.add(Cls(pname, cname, counters(cls)))
+            }
+        }
+        rowsCls.sortByDescending { pct(it.c["LINE"] ?: (0 to 0)) }
+        rowsPkg.sortBy { it.name }
+
+        val cards = listOf(
+            "Строки" to "LINE", "Ветвления" to "BRANCH", "Методы" to "METHOD", "Классы" to "CLASS"
+        ).filter { overall.containsKey(it.second) }.joinToString("") { (name, key) ->
+            val c = overall.getValue(key)
+            """<div class="card"><div class="k">$name</div><div class="v">${pct(c)}%</div>""" +
+                """<div class="s">${c.first}/${c.second}</div></div>"""
+        }
+
+        val tablePkg = buildString {
+            append("""<table><thead><tr><th>Пакет</th><th>Строки</th><th>Ветвления</th><th>Методы</th></tr></thead><tbody>""")
+            for (r in rowsPkg) {
+                append("""<tr><td class="pkg">${esc(r.name)}</td>""")
+                append("""<td>${cell(r.c, "LINE")}</td><td>${cell(r.c, "BRANCH")}</td><td>${cell(r.c, "METHOD")}</td></tr>""")
+            }
+            append("</tbody></table>")
+        }
+        val tableCls = buildString {
+            append("""<table><thead><tr><th>Пакет</th><th>Класс</th><th>Строки</th><th>Ветвления</th><th>Методы</th></tr></thead><tbody>""")
+            for (r in rowsCls) {
+                append("""<tr><td class="pkg">${esc(r.pkg)}</td><td class="cls">${esc(r.name)}</td>""")
+                append("""<td>${cell(r.c, "LINE")}</td><td>${cell(r.c, "BRANCH")}</td><td>${cell(r.c, "METHOD")}</td></tr>""")
+            }
+            append("</tbody></table>")
+        }
+
+        val html = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Отчёт о покрытии — JaCoCo</title>
+<style>
+:root{color-scheme:light dark}
+body{font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:24px;
+background:#0d1117;color:#e6edf3}
+@media (prefers-color-scheme:light){body{background:#fff;color:#1f2328}}
+h1{font-size:20px;margin:0 0 4px} .sub{opacity:.6;margin:0 0 20px}
+.cards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px}
+.card{border:1px solid #30363d;border-radius:10px;padding:12px 18px;min-width:110px}
+@media (prefers-color-scheme:light){.card{border-color:#d0d7de}}
+.card .k{opacity:.6;font-size:12px} .card .v{font-size:26px;font-weight:700}
+.card .s{opacity:.5;font-size:12px}
+h2{font-size:15px;margin:24px 0 8px}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:640px}
+th,td{text-align:left;padding:6px 10px;border-bottom:1px solid #21262d;font-size:13px}
+@media (prefers-color-scheme:light){th,td{border-bottom-color:#eaecef}}
+th{opacity:.6;font-weight:600}
+.pkg{opacity:.7;font-family:ui-monospace,monospace;font-size:12px}
+.cls{font-weight:600}
+.bar{position:relative;background:#21262d;border-radius:4px;height:16px;width:120px;overflow:hidden}
+@media (prefers-color-scheme:light){.bar{background:#eaecef}}
+.fill{position:absolute;left:0;top:0;bottom:0}
+.lbl{position:relative;font-size:11px;padding-left:6px;line-height:16px;mix-blend-mode:difference;color:#fff}
+.na{opacity:.4}
+</style></head><body>
+<h1>Отчёт о тестовом покрытии (JaCoCo)</h1>
+<p class="sub">Юнит-тесты <code>com.example.moviedb.tests.*</code> · вариант devDebug · сгенерировано из JaCoCo XML</p>
+<div class="cards">$cards</div>
+<h2>По пакетам</h2><div class="wrap">$tablePkg</div>
+<h2>По классам</h2><div class="wrap">$tableCls</div>
+</body></html>"""
+
+        val out = outFile.asFile
+        out.parentFile.mkdirs()
+        out.writeText(html + "\n")
+        logger.lifecycle("Отчёт о покрытии: ${out.absolutePath}")
     }
 }
